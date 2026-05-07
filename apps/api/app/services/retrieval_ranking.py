@@ -27,6 +27,38 @@ STOPWORDS = {
 }
 PREFERRED_CHUNK_TYPES = {"procedure", "content", "table"}
 LOW_VALUE_CHUNK_TYPES = {"navigation", "reference", "empty"}
+GENERIC_METADATA_TERMS = {
+    "about",
+    "add",
+    "adding",
+    "configuration",
+    "configure",
+    "configuring",
+    "edit",
+    "editing",
+    "introduction",
+    "manage",
+    "managing",
+    "overview",
+    "setup",
+    "settings",
+}
+UNREQUESTED_CONTEXT_MARKERS = {
+    "accounting",
+    "connector",
+    "external",
+    "export",
+    "exports",
+    "import",
+    "imports",
+    "integration",
+    "integrations",
+    "interface",
+    "interfaces",
+    "mapping",
+    "sync",
+    "vendor",
+}
 
 
 @dataclass(frozen=True)
@@ -132,6 +164,8 @@ def _with_generic_score(
         "term_metadata": 0.0,
         "term_body": 0.0,
         "context_metadata": 0.0,
+        "topic_focus": 0.0,
+        "unrequested_context": 0.0,
         "chunk_type": 0.0,
         "length": 0.0,
         "hybrid": 0.0,
@@ -182,6 +216,21 @@ def _with_generic_score(
         boosts["context_metadata"] = min(0.24, 0.12 * len(context_matches))
         reasons.append("query_context_in_metadata")
 
+    topic_focus = _topic_focus_score(topical_terms, metadata_text)
+    if topic_focus > 0:
+        boosts["topic_focus"] = topic_focus
+        reasons.append("focused_topic_metadata")
+
+    unrequested_context_penalty = _unrequested_context_penalty(
+        topical_terms=topical_terms,
+        context_terms=context_terms,
+        metadata_text=metadata_text,
+        body_text=body,
+    )
+    if unrequested_context_penalty:
+        boosts["unrequested_context"] = unrequested_context_penalty
+        reasons.append("unrequested_specific_context")
+
     if chunk_type in PREFERRED_CHUNK_TYPES:
         boosts["chunk_type"] = 0.08
         reasons.append(f"preferred_chunk_type:{chunk_type}")
@@ -227,6 +276,79 @@ def _normalize_for_match(value: Any) -> str:
     text = re.sub(r"\[([^\]]+)\]", r"\1", text)
     text = text.translate(str.maketrans({char: " " for char in string.punctuation}))
     return " ".join(text.split())
+
+
+def _topic_focus_score(topical_terms: list[str], metadata_text: str) -> float:
+    metadata_tokens = metadata_text.split()
+    if not topical_terms or not metadata_tokens:
+        return 0.0
+    matched_terms = {term for term in topical_terms if term in metadata_tokens}
+    if len(matched_terms) < min(2, len(topical_terms)):
+        return 0.0
+    extra_terms = [
+        token
+        for token in metadata_tokens
+        if (
+            token not in matched_terms
+            and token not in STOPWORDS
+            and token not in GENERIC_METADATA_TERMS
+        )
+    ]
+    extra_ratio = len(extra_terms) / max(len(matched_terms), 1)
+    if extra_ratio <= 1.0:
+        return 0.14
+    if extra_ratio <= 2.0:
+        return 0.08
+    return 0.0
+
+
+def _unrequested_context_penalty(
+    *,
+    topical_terms: list[str],
+    context_terms: list[str],
+    metadata_text: str,
+    body_text: str,
+) -> float:
+    if context_terms:
+        return 0.0
+    metadata_tokens = metadata_text.split()
+    if len(topical_terms) < 2 or not metadata_tokens:
+        return 0.0
+    matched_terms = {term for term in topical_terms if term in metadata_tokens}
+    if len(matched_terms) < min(2, len(topical_terms)):
+        return 0.0
+
+    extra_terms = _specific_extra_terms(metadata_tokens, matched_terms)
+    if len(extra_terms) < 3:
+        body_tokens = body_text.split()[:120]
+        unrequested_markers = [
+            token
+            for token in body_tokens
+            if token in UNREQUESTED_CONTEXT_MARKERS and token not in topical_terms
+        ]
+        if unrequested_markers:
+            return -0.28
+        return 0.0
+
+    extra_ratio = len(set(extra_terms)) / max(len(matched_terms), 1)
+    if extra_ratio >= 3.0:
+        return -0.28
+    if extra_ratio >= 2.0:
+        return -0.16
+    return 0.0
+
+
+def _specific_extra_terms(tokens: list[str], matched_terms: set[str]) -> list[str]:
+    return [
+        token
+        for token in tokens
+        if (
+            token not in matched_terms
+            and token not in STOPWORDS
+            and token not in GENERIC_METADATA_TERMS
+            and len(token) >= 4
+        )
+    ]
 
 
 def _stringify_metadata_value(value: Any) -> str | None:

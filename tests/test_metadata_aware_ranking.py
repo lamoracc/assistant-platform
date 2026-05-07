@@ -164,6 +164,61 @@ class MetadataAwareRankingTests(unittest.TestCase):
 
         self.assertEqual(ranked[0].source_file, "rate-code.md")
 
+    def test_generic_transaction_codes_query_prefers_general_setup_doc(self) -> None:
+        general = chunk(
+            "Use transaction codes setup to configure financial posting behavior.",
+            title="About Transaction Codes Setup",
+            heading="Transaction Codes Setup",
+            source_file="about-transaction-codes-setup.md",
+            score=0.45,
+        )
+        interface_specific = chunk(
+            (
+                "Configure transaction codes for a back office interface. "
+                "Map exported financial activity to external accounting systems."
+            ),
+            title="Back Office Interface Setup",
+            heading="Transaction Codes Configuration",
+            source_file="back-office-interface-setup.md",
+            score=0.55,
+            breadcrumbs=["Integrations", "Back Office Interface"],
+        )
+
+        ranked = rank_candidates(
+            "How do I configure transaction codes?",
+            [interface_specific, general],
+        )
+
+        self.assertEqual(
+            ranked[0].source_file,
+            "about-transaction-codes-setup.md",
+        )
+        self.assertIn("focused_topic_metadata", ranked[0].ranking_reason)
+        self.assertIn("unrequested_specific_context", ranked[1].ranking_reason)
+
+    def test_requested_interface_context_is_not_penalized(self) -> None:
+        interface_specific = chunk(
+            (
+                "Configure transaction codes for a back office interface. "
+                "Map exported financial activity to external accounting systems."
+            ),
+            title="Back Office Interface Setup",
+            heading="Transaction Codes Configuration",
+            source_file="back-office-interface-setup.md",
+            score=0.55,
+            breadcrumbs=["Integrations", "Back Office Interface"],
+        )
+
+        ranked = rank_candidates(
+            "How do I configure transaction codes interface?",
+            [interface_specific],
+        )
+
+        self.assertNotIn(
+            "unrequested_specific_context",
+            ranked[0].ranking_reason or [],
+        )
+
     def test_reservation_reinstate_permission_prefers_exact_permission(self) -> None:
         target = chunk(
             "This permission allows a user to reinstate a previously cancelled reservation.",

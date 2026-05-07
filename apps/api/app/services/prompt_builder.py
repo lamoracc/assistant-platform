@@ -63,10 +63,11 @@ def build_retrieval_only_answer(
             "I could not find relevant documentation chunks for that question."
         )
 
-    answer_chunks = _unique_answer_chunks(chunks, limit=3)
-    facts = _extract_relevant_facts(question, answer_chunks, limit=5)
+    source_chunks = _unique_answer_chunks(chunks, limit=3)
+    primary_chunks = _primary_answer_chunks(chunks)
+    facts = _extract_relevant_facts(question, primary_chunks, limit=5)
     if not facts:
-        facts = [_compact_excerpt(chunk.text) for chunk in answer_chunks]
+        facts = [_compact_excerpt(chunk.text) for chunk in primary_chunks[:1]]
 
     short_answer = " ".join(facts[:2]).strip()
     if len(short_answer) > 420:
@@ -84,9 +85,22 @@ def build_retrieval_only_answer(
     lines.extend(["", "Top sources:"])
     lines.extend(
         f"{index}. {chunk.source_file} — {chunk.heading or chunk.document}"
-        for index, chunk in enumerate(answer_chunks, start=1)
+        for index, chunk in enumerate(source_chunks, start=1)
     )
     return "\n".join(lines).strip()
+
+
+def _primary_answer_chunks(chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
+    if not chunks:
+        return []
+    primary_source = chunks[0].source_file
+    primary_document = chunks[0].document
+    primary_chunks = [
+        chunk
+        for chunk in chunks
+        if chunk.source_file == primary_source or chunk.document == primary_document
+    ]
+    return _unique_answer_chunks(primary_chunks, limit=3)
 
 
 def _unique_answer_chunks(

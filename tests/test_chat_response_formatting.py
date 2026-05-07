@@ -159,6 +159,33 @@ class ChatResponseFormattingTests(unittest.TestCase):
         self.assertNotIn("Welcome > Configuration Topics", answer)
         self.assertIn("Market codes classify business", answer)
 
+    def test_answer_facts_use_primary_source_only(self) -> None:
+        package_text = (
+            "Package setup involves defining package elements, or codes, and "
+            "collecting these elements into groups, or packages. Each package "
+            "code is set up separately before the package group is attached to "
+            "a rate code or reservation."
+        )
+        source_text = (
+            "Just like market codes, source codes are attached to reservation "
+            "records in order to track how reservations come to the property. "
+            "All source codes can be distributed to external systems."
+        )
+
+        answer = build_retrieval_only_answer(
+            "How do I configure package codes in PMS?",
+            [
+                chunk(package_text, source_file="package_codes.md", heading="Package Codes"),
+                chunk(source_text, source_file="source_codes.md", heading="Source Codes"),
+            ],
+        )
+
+        self.assertIn("Package setup involves defining package elements", answer)
+        self.assertIn("package_codes.md — Package Codes", answer)
+        self.assertIn("source_codes.md — Source Codes", answer)
+        self.assertNotIn("source codes are attached", answer.lower())
+        self.assertNotIn("reservation records", answer.lower())
+
 
 if __name__ == "__main__":
     unittest.main()
