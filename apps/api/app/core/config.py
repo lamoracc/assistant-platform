@@ -77,6 +77,9 @@ class Settings:
     llm_model_name: str = os.getenv("LLM_MODEL_NAME", "qwen")
     reranker_model_name: str | None = _optional_env("RERANKER_MODEL_NAME")
     reranker_batch_size: int = _int_env("RERANKER_BATCH_SIZE", 16)
+    ingestion_worker_poll_seconds: float = _float_env(
+        "INGESTION_WORKER_POLL_SECONDS", 5.0
+    )
 
 
 settings = Settings()

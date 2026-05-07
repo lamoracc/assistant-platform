@@ -147,6 +147,63 @@ class FolderIngestionBatchTests(unittest.TestCase):
         self.assertEqual(stats["documents_ingested"], 2)
         self.assertEqual(stats["skipped_empty"], 1)
 
+    def test_folder_import_reports_progress(self) -> None:
+        events: list[dict] = []
+        ingestion.settings = replace(
+            ingestion.settings,
+            ingestion_embed_batch_chunks=2,
+            embedding_dimensions=4,
+        )
+        ingestion.embed_texts = lambda texts: [[1.0, 0.0, 0.0, 0.0] for _ in texts]
+        ingestion.upsert_document_chunks = lambda points: None
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "first.md").write_text("# First\n\nUseful content.", encoding="utf-8")
+            (root / "second.md").write_text("# Second\n\nUseful content.", encoding="utf-8")
+
+            stats = ingestion.ingest_help_folder(
+                FakeDb(),
+                str(root),
+                progress_callback=events.append,
+            )
+
+        self.assertEqual(stats["processed"], 2)
+        self.assertTrue(events)
+        self.assertEqual(events[0]["total_files"], 2)
+        self.assertEqual(events[-1]["processed_files"], 2)
+
+    def test_folder_import_honors_cancel_check(self) -> None:
+        events: list[dict] = []
+        ingestion.settings = replace(
+            ingestion.settings,
+            ingestion_embed_batch_chunks=10,
+            embedding_dimensions=4,
+        )
+        ingestion.embed_texts = lambda texts: [[1.0, 0.0, 0.0, 0.0] for _ in texts]
+        ingestion.upsert_document_chunks = lambda points: None
+        checks = {"count": 0}
+
+        def cancel_after_first_check() -> bool:
+            checks["count"] += 1
+            return checks["count"] > 1
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "first.md").write_text("# First\n\nUseful content.", encoding="utf-8")
+            (root / "second.md").write_text("# Second\n\nUseful content.", encoding="utf-8")
+
+            stats = ingestion.ingest_help_folder(
+                FakeDb(),
+                str(root),
+                progress_callback=events.append,
+                cancel_check=cancel_after_first_check,
+            )
+
+        self.assertEqual(stats["canceled"], 1)
+        self.assertEqual(stats["processed"], 1)
+        self.assertEqual(stats["documents_ingested"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

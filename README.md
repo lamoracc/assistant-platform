@@ -88,6 +88,7 @@ Embeddings and ingestion:
 - `EMBEDDING_BATCH_SIZE`: embedding encode batch size.
 - `INGESTION_EMBED_BATCH_CHUNKS`: folder-import embedding batch size across
   documents.
+- `INGESTION_WORKER_POLL_SECONDS`: DB polling interval for the ingestion worker.
 - `HF_HOME`, `TRANSFORMERS_CACHE`, `SENTENCE_TRANSFORMERS_HOME`: model cache
   locations inside containers.
 
@@ -188,6 +189,77 @@ currently OCR-indexed as text chunks.
 The folder importer hashes files. If a document with the same hash already
 exists, it skips duplicate ingestion and reindexes existing chunks into Qdrant
 instead of silently losing vector storage.
+
+## Background Ingestion Jobs
+
+The synchronous `POST /documents/import-folder` endpoint remains available for
+compatibility. New large imports should use background ingestion jobs so the API
+request can return immediately and progress can be inspected.
+
+Create a job:
+
+```bash
+curl -X POST http://localhost:8000/ingestion-jobs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source_path": "/data/my_documents",
+    "source_name": "my-docs",
+    "metadata": {"source_type": "documentation"}
+  }'
+```
+
+List recent jobs:
+
+```bash
+curl http://localhost:8000/ingestion-jobs
+curl "http://localhost:8000/ingestion-jobs?status=running"
+```
+
+Get one job:
+
+```bash
+curl http://localhost:8000/ingestion-jobs/{job_id}
+```
+
+Cancel a running or pending job:
+
+```bash
+curl -X POST http://localhost:8000/ingestion-jobs/{job_id}/cancel
+```
+
+Retry a failed or canceled job:
+
+```bash
+curl -X POST http://localhost:8000/ingestion-jobs/{job_id}/retry
+```
+
+The `worker-ingest` service polls PostgreSQL for `pending` jobs, marks one as
+`running`, and calls the same `ingest_help_folder` service used by the existing
+sync endpoint. No Celery/RQ dependency is required in this first step.
+
+Job status values:
+
+- `pending`
+- `running`
+- `completed`
+- `failed`
+- `canceled`
+
+Progress fields:
+
+- `total_files`
+- `processed_files`
+- `failed_files`
+- `current_file`
+- `error_summary`
+- `error_details`
+- `cancel_requested`
+- `created_at`, `updated_at`, `started_at`, `finished_at`
+
+Cancellation is cooperative: the worker checks the cancel flag between files.
+Already committed documents/chunks remain indexed. Per-file failures are counted
+and do not necessarily fail the entire job when the existing ingestion flow can
+continue safely.
 
 ## Current Sample Corpus
 
@@ -335,9 +407,12 @@ curl -X POST http://localhost:8000/debug/search \
 ## Current Limitations
 
 - Folder import still runs synchronously in the API process.
-- `worker-ingest` is present but not yet the production ingestion executor.
-- There is no persistent import-job table, progress API, cancellation, or
-  resume checkpointing.
+- Background folder import jobs exist, but they use simple DB polling and are
+  not yet a robust distributed queue.
+- Job cancellation is cooperative and checked between files, not during a long
+  embedding batch already in progress.
+- Retry restarts a failed/canceled source path from the beginning and relies on
+  file-hash duplicate skipping; it is not a true checkpoint resume.
 - Database schema is still managed with SQLAlchemy `create_all`; Alembic
   migrations are not yet in place.
 - There is no authentication, authorization, source-level access control, or
@@ -353,8 +428,8 @@ curl -X POST http://localhost:8000/debug/search \
 
 ## Prioritized Next Steps
 
-1. Move folder ingestion into a real background job flow with job status,
-   progress, cancellation, and resume.
+1. Harden ingestion jobs with row-level claiming, heartbeat/stale-job recovery,
+   richer per-file error records, and checkpoint-style resume.
 2. Add Alembic migrations before expanding the schema further.
 3. Add `knowledge_sources` / source collections / visibility metadata so
    multiple corpora can coexist safely.

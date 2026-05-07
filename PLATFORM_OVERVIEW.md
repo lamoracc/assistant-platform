@@ -19,11 +19,13 @@ meeting notes, task systems, email summaries, and other company knowledge.
 The project currently provides:
 
 - FastAPI API service.
-- Docker Compose environment with API, PostgreSQL, Qdrant, Redis, and a worker
-  placeholder.
+- Docker Compose environment with API, PostgreSQL, Qdrant, Redis, and a simple
+  ingestion worker.
 - Multi-format document extraction for HTML/HTM, PDF, DOC/DOCX, Markdown, and
   TXT.
 - Folder import for large documentation trees.
+- Background ingestion jobs with persistent job status and cooperative
+  cancellation.
 - PostgreSQL storage for documents, chunks, metadata, links, and image assets.
 - Qdrant vector storage for chunk retrieval.
 - Multilingual embeddings, default `BAAI/bge-m3`.
@@ -75,8 +77,8 @@ Important services:
 
 - PostgreSQL stores source documents, chunks, metadata, links, and image assets.
 - Qdrant stores vectors and payloads for chunk search.
-- Redis is present as queue/cache infrastructure but is not yet the real
-  ingestion job runner.
+- Redis is present as queue/cache infrastructure. The first background
+  ingestion worker uses PostgreSQL polling instead of Celery/RQ.
 
 ## Ingestion Flow
 
@@ -106,6 +108,19 @@ Folder ingestion:
 
 Duplicate file hashes are skipped at ingestion time, but existing chunks can be
 reindexed into Qdrant. Retrieval dedupe does not remove anything from storage.
+
+Background ingestion jobs:
+
+1. `POST /ingestion-jobs` creates a row in `ingestion_jobs`.
+2. The worker polls PostgreSQL for `pending` jobs.
+3. The worker claims a job, marks it `running`, and calls the same
+   `ingest_help_folder` service used by the sync endpoint.
+4. Progress fields are updated between files: total, processed, failed, and
+   current file.
+5. Cancellation is cooperative through `cancel_requested` and is checked between
+   files.
+6. Failed/canceled jobs can be retried from the beginning; existing file hashes
+   keep retries from duplicating already indexed documents.
 
 ## Retrieval Flow
 
@@ -225,9 +240,12 @@ Treat this as the first loaded knowledge source, not as a product boundary.
 
 ## Limitations
 
-- Ingestion still runs synchronously in the API process.
-- Worker service is not yet wired to real import jobs.
-- No persistent import jobs, status endpoint, cancellation, or resume.
+- Synchronous folder import still exists for compatibility.
+- Background ingestion uses simple DB polling, not a robust distributed queue.
+- Cancellation is cooperative and is checked between files, not in the middle of
+  long embedding batches.
+- Retry restarts from the source path and relies on duplicate file hashes; it is
+  not true checkpoint resume yet.
 - No Alembic migrations.
 - No users, roles, source permissions, or audit trail.
 - No formal source model for multiple corpora and visibility rules.
@@ -239,8 +257,8 @@ Treat this as the first loaded knowledge source, not as a product boundary.
 
 ## Prioritized Roadmap
 
-1. Background ingestion jobs with persistent status, progress, cancellation, and
-   resume.
+1. Harden ingestion jobs with safer multi-worker claiming, heartbeat/stale-job
+   recovery, per-file error records, and true checkpoint resume.
 2. Alembic migrations.
 3. Knowledge-source model with owner, source type, collection, visibility, and
    refresh policy.

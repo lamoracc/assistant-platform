@@ -4,6 +4,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import Any, Callable
 from urllib.parse import urldefrag, urlparse
 
 from qdrant_client.http import models as qdrant_models
@@ -32,6 +33,14 @@ class IngestionError(ValueError):
 
 class EmptyDocumentError(IngestionError):
     pass
+
+
+class IngestionCanceled(IngestionError):
+    pass
+
+
+ProgressCallback = Callable[[dict[str, Any]], None]
+CancelCheck = Callable[[], bool]
 
 
 @dataclass
@@ -195,7 +204,12 @@ def _source_type(filename: str, content_type: str) -> str:
     return routed.route if routed.route not in {"unsupported", "ignored"} else "document"
 
 
-def ingest_help_folder(db: Session, root_path: str) -> dict[str, int | str]:
+def ingest_help_folder(
+    db: Session,
+    root_path: str,
+    progress_callback: ProgressCallback | None = None,
+    cancel_check: CancelCheck | None = None,
+) -> dict[str, int | str]:
     started_at = time.monotonic()
     root = Path(root_path).expanduser().resolve()
     if not root.exists() or not root.is_dir():
@@ -229,18 +243,56 @@ def ingest_help_folder(db: Session, root_path: str) -> dict[str, int | str]:
         "ignored": 0,
         "total_chunks": 0,
         "batch_flushes": 0,
+        "canceled": 0,
     }
+    _emit_progress(
+        progress_callback,
+        total_files=len(files),
+        processed_files=0,
+        failed_files=0,
+        current_file=None,
+        metadata={"route_counts": route_counts},
+    )
     path_to_document_id: dict[str, uuid.UUID] = {}
     pending_batch: list[PendingFolderDocument] = []
     pending_chunk_count = 0
 
     for path in files:
+        if cancel_check and cancel_check():
+            logger.warning("Folder import cancellation requested root=%s", root)
+            stats["canceled"] = 1
+            if pending_batch:
+                _flush_folder_ingestion_batch(
+                    db=db,
+                    root=root,
+                    batch=pending_batch,
+                    stats=stats,
+                    path_to_document_id=path_to_document_id,
+                    started_at=started_at,
+                )
+                pending_chunk_count = 0
+            break
+
         routed = route_file(path)
         relative_path = path.relative_to(root).as_posix()
+        _emit_progress(
+            progress_callback,
+            total_files=len(files),
+            processed_files=stats["processed"],
+            failed_files=stats["failed"],
+            current_file=relative_path,
+        )
 
         if routed.route == "ignored":
             logger.info("Ignoring support asset: %s", relative_path)
             stats["ignored"] += 1
+            _emit_progress(
+                progress_callback,
+                total_files=len(files),
+                processed_files=stats["processed"],
+                failed_files=stats["failed"],
+                current_file=relative_path,
+            )
             continue
 
         try:
@@ -268,6 +320,13 @@ def ingest_help_folder(db: Session, root_path: str) -> dict[str, int | str]:
                     path_to_document_id[relative_path] = existing.id
                     stats["documents_skipped"] += 1
                     stats["skipped_duplicate"] += 1
+                    _emit_progress(
+                        progress_callback,
+                        total_files=len(files),
+                        processed_files=stats["processed"],
+                        failed_files=stats["failed"],
+                        current_file=relative_path,
+                    )
                     continue
 
                 extracted = extract_document(
@@ -315,6 +374,13 @@ def ingest_help_folder(db: Session, root_path: str) -> dict[str, int | str]:
                         started_at=started_at,
                     )
                     pending_chunk_count = 0
+                _emit_progress(
+                    progress_callback,
+                    total_files=len(files),
+                    processed_files=stats["processed"],
+                    failed_files=stats["failed"],
+                    current_file=relative_path,
+                )
                 continue
 
             if routed.route == "image":
@@ -335,19 +401,48 @@ def ingest_help_folder(db: Session, root_path: str) -> dict[str, int | str]:
                     stats["images_stored"] += 1
                 else:
                     stats["images_skipped"] += 1
+                _emit_progress(
+                    progress_callback,
+                    total_files=len(files),
+                    processed_files=stats["processed"],
+                    failed_files=stats["failed"],
+                    current_file=relative_path,
+                )
                 continue
 
             logger.info("Ignoring unsupported file: %s", relative_path)
             stats["ignored"] += 1
+            _emit_progress(
+                progress_callback,
+                total_files=len(files),
+                processed_files=stats["processed"],
+                failed_files=stats["failed"],
+                current_file=relative_path,
+            )
         except EmptyDocumentError:
             logger.info("Skipping empty document: %s", relative_path)
             stats["skipped_empty"] += 1
+            _emit_progress(
+                progress_callback,
+                total_files=len(files),
+                processed_files=stats["processed"],
+                failed_files=stats["failed"],
+                current_file=relative_path,
+            )
         except Exception:
             logger.exception("Failed to ingest %s", relative_path)
             db.rollback()
             pending_batch.clear()
             pending_chunk_count = 0
             stats["failed"] += 1
+            _emit_progress(
+                progress_callback,
+                total_files=len(files),
+                processed_files=stats["processed"],
+                failed_files=stats["failed"],
+                current_file=relative_path,
+                error_summary=f"Failed to ingest {relative_path}",
+            )
 
     if pending_batch:
         _flush_folder_ingestion_batch(
@@ -365,6 +460,14 @@ def ingest_help_folder(db: Session, root_path: str) -> dict[str, int | str]:
     stats["elapsed_seconds"] = elapsed_seconds
     logger.warning("Finished documentation folder import stats=%s", stats)
     return stats
+
+
+def _emit_progress(
+    progress_callback: ProgressCallback | None,
+    **event: Any,
+) -> None:
+    if progress_callback:
+        progress_callback(event)
 
 
 def _flush_folder_ingestion_batch(

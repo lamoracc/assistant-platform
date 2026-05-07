@@ -18,6 +18,19 @@ The core retrieval path is now mostly generic:
 Remaining source-specific areas are mostly documentation examples, fixtures, and
 HTML extraction heuristics for legacy help exports.
 
+## Background Ingestion Jobs Check
+
+The first background ingestion implementation is generic:
+
+- job records store `source_path`, optional `source_name`, and free-form
+  metadata;
+- statuses and progress counters are domain-neutral;
+- the worker calls existing generic folder ingestion code;
+- no OPERA/PMS terms are used in job model, API, worker, or service logic;
+- OPERA remains only the current sample corpus documented elsewhere.
+
+No new source-specific hardcoding was introduced in the job API or worker.
+
 ## Reviewed Areas
 
 Reviewed from the current local working copy:
