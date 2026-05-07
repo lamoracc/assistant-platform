@@ -29,7 +29,7 @@ The project currently provides:
 - PostgreSQL storage for documents, chunks, metadata, links, and image assets.
 - Qdrant vector storage for chunk retrieval.
 - Multilingual embeddings, default `BAAI/bge-m3`.
-- Retrieval-only answer mode when no LLM provider is configured.
+- Compact retrieval-only answer mode when no LLM provider is configured.
 - Optional OpenAI-compatible LLM provider.
 - Generic retrieval ranking with metadata-aware boosts.
 - Retrieval-stage exact duplicate and near-duplicate filtering.
@@ -70,7 +70,8 @@ Important services:
   diagnostics, and final source assembly.
 - `retrieval_ranking.py`: generic score boosts and ranking details.
 - `reranker.py`: optional CrossEncoder reranker with no-op fallback.
-- `prompt_builder.py`: generic prompt and retrieval-only answer construction.
+- `prompt_builder.py`: generic prompt construction and compact retrieval-only
+  answer formatting.
 - `llm_provider.py`: optional OpenAI-compatible chat completion provider.
 
 ### Storage Layer
@@ -138,7 +139,7 @@ The retrieval pipeline is content-first and generic:
 9. Optionally rerank using CrossEncoder.
 10. Group near-duplicate body content.
 11. Return `RETRIEVAL_FINAL_K` final sources.
-12. Build context for LLM or retrieval-only answer.
+12. Build context for LLM or compact retrieval-only answer.
 
 This split lets the platform retrieve a wider candidate set while keeping final
 answers concise.
@@ -152,12 +153,24 @@ Ranking is generic and domain-agnostic. It considers:
 - exact full-query phrase in body;
 - multi-term query phrases;
 - query-term coverage in metadata and body;
+- generic query context terms such as acronyms/identifiers as metadata
+  preferences, not domain-specific body boosts;
+- focused topic metadata, so concise titles/headings that closely match a
+  generic setup/configuration query can outrank narrower context pages;
+- a small generic penalty for unrequested integration/interface/import/export,
+  external-system, or vendor-style context when the user did not ask for that
+  context;
 - chunk type preference for `procedure`, `content`, and `table`;
 - penalties for navigation/reference/empty chunks;
 - penalties for very short or very long chunks.
 
 Filename is not used as the primary duplicate key and is not used for metadata
 boosts. It is still kept for diagnostics and source display.
+
+This ranking layer is deliberately heuristic and domain-agnostic. For example,
+a generic "configure X" query should prefer general "X setup" pages, while a
+query that explicitly asks for an interface, export, import, or external system
+workflow can still surface those more specific pages.
 
 ## Reranking Behavior
 
@@ -191,8 +204,29 @@ Near-duplicate dedupe:
   URLs, and punctuation noise;
 - default threshold is `0.92`;
 - keeps one candidate per group by default;
-- can prefer the candidate whose metadata context matches query terms;
+- can prefer the candidate whose metadata, breadcrumbs, section/title context,
+  or breadcrumb-like body context matches query context terms;
 - reports `near_duplicate_content`, `duplicate_of`, and `similarity`.
+
+## Answer Formatting
+
+When `LLM_PROVIDER_URL` is configured, the API builds a bounded context from
+retrieved chunks and sends it to the provider.
+
+When no LLM provider is configured, `/chat/query` stays useful in
+retrieval-only mode. Instead of returning a long concatenation of raw chunks,
+the `answer` field is formatted as:
+
+- `Short answer`
+- `Relevant facts`
+- `Top sources`
+
+The short answer and facts are extractive and intentionally conservative. They
+are built only from the primary top-ranked source, or chunks from the same
+`source_file`/document as that primary result. This keeps fallback answers
+focused and avoids mixing unrelated facts from lower-ranked sources. The
+separate `sources` JSON array still returns the final retrieved sources for
+inspection or UI rendering.
 
 ## Debug Diagnostics
 
@@ -252,6 +286,8 @@ Treat this as the first loaded knowledge source, not as a product boundary.
 - Keyword fallback uses broad SQL `ILIKE`.
 - No production retrieval evaluation suite.
 - Reranker is not enabled by default and needs latency/quality testing.
+- Retrieval-only answers are compact extractive fallbacks and do not perform
+  LLM-style multi-source synthesis.
 - No production observability for latency, throughput, and model behavior.
 - Parser/source/prompt/ranking profiles are still planned, not implemented.
 

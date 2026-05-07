@@ -121,8 +121,9 @@ Reranker:
 - `RERANKER_BATCH_SIZE`: reranker batch size.
 
 If `LLM_PROVIDER_URL` is empty, `/chat/query` still works in retrieval-only
-mode. If `RERANKER_MODEL_NAME` is empty or fails to load, retrieval falls back
-to generic ranking.
+mode and returns a compact structured answer built from the top retrieved
+source. If `RERANKER_MODEL_NAME` is empty or fails to load, retrieval falls
+back to generic ranking.
 
 ## Setup
 
@@ -282,6 +283,31 @@ curl -X POST http://localhost:8000/chat/query \
   -d '{"question":"How do I configure access permissions?","debug":true}'
 ```
 
+Response behavior:
+
+- `sources` always contains the final retrieved sources returned by retrieval.
+- `debug=false` omits diagnostics and per-source `ranking_reason`.
+- `debug=true` includes retrieval/ranking/dedupe diagnostics and
+  `ranking_reason`.
+- When an LLM provider is configured, the retrieved chunks are converted into a
+  bounded prompt context for the provider.
+- When no LLM provider is configured, the API returns a retrieval-only answer
+  instead of dumping full chunks. The answer contains `Short answer`,
+  `Relevant facts`, and `Top sources`.
+
+Retrieval-only answer formatting:
+
+- `Short answer` and `Relevant facts` are extracted only from the primary
+  top-ranked source, or chunks from the same `source_file`/document as that
+  primary result.
+- `Top sources` may still list up to three unique sources for transparency.
+- The `sources` JSON array is unchanged and may include up to
+  `RETRIEVAL_FINAL_K` sources.
+- Excerpts are sentence-based, truncated, and cleaned of breadcrumb/navigation
+  noise where possible.
+- Duplicate and near-duplicate source content is not repeated in the
+  human-readable answer.
+
 The retrieval pipeline:
 
 1. Sanitize the user question.
@@ -297,7 +323,7 @@ The retrieval pipeline:
 10. Optionally apply a CrossEncoder reranker.
 11. Group near-duplicate content after ranking/reranking.
 12. Return `RETRIEVAL_FINAL_K` final sources.
-13. Build bounded context for the LLM or retrieval-only response.
+13. Build bounded context for the LLM or compact retrieval-only response.
 
 `RETRIEVAL_CANDIDATE_K` and `RETRIEVAL_FINAL_K` are intentionally separate:
 retrieval can inspect a larger candidate pool while still returning a small,
@@ -312,12 +338,25 @@ Generic ranking uses:
 - exact query phrase matches in body text;
 - multi-term query phrases, such as `package codes` or `reservation reinstate`;
 - query-term coverage in metadata and body;
+- generic context-like query terms, such as uppercase acronyms or identifiers,
+  as metadata/context preferences rather than topical body boosts;
+- focused topic metadata: concise titles/headings that closely match the query
+  topic are preferred for generic setup/configuration questions;
+- unrequested specific context: candidates that introduce extra integration,
+  interface, import/export, external system, or vendor-style context can receive
+  a small penalty when the user did not ask for that context;
 - useful chunk types: `procedure`, `content`, `table`;
 - penalties for low-value chunk types and very short/very long chunks.
 
 Filename is not used as the primary duplicate key and is not used for metadata
 boosts. Filename/path may still appear in diagnostics and keyword candidate
 retrieval.
+
+The unrequested-context penalty is generic and content-based. It is intended to
+keep broad queries such as "configure transaction codes" focused on general
+topic/setup pages instead of narrower integration/interface pages. If the user
+explicitly asks for that context, for example an interface or export workflow,
+the penalty is not applied.
 
 Reranking is optional. With no `RERANKER_MODEL_NAME`, `get_reranker()` returns a
 no-op reranker. When configured, the CrossEncoder scores `(question, chunk)`
@@ -346,7 +385,8 @@ Near-duplicate dedupe:
   navigation, markdown URLs, and punctuation noise;
 - uses token-shingle similarity with default threshold `0.92`;
 - keeps the best candidate in each group by score, with a generic preference
-  for query terms that match metadata context;
+  for query context terms that match metadata, breadcrumbs, section/title
+  context, or breadcrumb-like context embedded in body text;
 - reports `filtered_reason="near_duplicate_content"`,
   `duplicate_of={source_file, heading, chunk_index}`, and `similarity`.
 
@@ -425,6 +465,9 @@ curl -X POST http://localhost:8000/debug/search \
 - There is no production observability layer for latency, throughput, model
   load time, and ingestion progress metrics.
 - Source/parser/prompt/ranking profiles are not yet formalized.
+- Retrieval-only answer generation is extractive and compact; it is useful as a
+  fallback, but it is not a substitute for an LLM-generated synthesis when
+  multi-source reasoning is needed.
 
 ## Prioritized Next Steps
 

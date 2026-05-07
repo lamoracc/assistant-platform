@@ -12,6 +12,14 @@ The core retrieval path is now mostly generic:
 - prompts are generic and configurable;
 - exact duplicate and near-duplicate dedupe use content, not filenames;
 - ranking boosts use title, heading, breadcrumbs, body text, and chunk type;
+- context preferences are derived from generic query/metadata signals, such as
+  acronyms or identifiers, not from OPERA/PMS-specific dictionaries;
+- topic-focus and unrequested-context ranking signals are generic: concise
+  topic metadata is preferred for broad setup/configuration queries, while
+  unrelated integration/interface/import/export or vendor-style context is
+  lightly penalized only when the user did not ask for that context;
+- retrieval-only answer formatting is generic and focuses extractive answers on
+  the top-ranked source;
 - optional reranker is disabled unless configured;
 - OPERA is described as the current sample corpus, not as platform behavior.
 
@@ -30,6 +38,19 @@ The first background ingestion implementation is generic:
 - OPERA remains only the current sample corpus documented elsewhere.
 
 No new source-specific hardcoding was introduced in the job API or worker.
+
+## Retrieval-Only Answer Formatting Check
+
+The compact retrieval-only answer formatter is generic:
+
+- it is used only when no LLM provider is configured;
+- it does not contain OPERA/PMS-specific terms or branching;
+- `Short answer` and `Relevant facts` are extracted from the primary top-ranked
+  source, or chunks from the same `source_file`/document;
+- `Top sources` may list additional unique sources, but lower-ranked secondary
+  sources do not contribute facts to the human-readable answer;
+- duplicate and near-duplicate content is suppressed in the answer text;
+- diagnostics behavior remains controlled by the existing `debug` flag.
 
 ## Reviewed Areas
 
@@ -115,7 +136,8 @@ platform hosts many corpora.
   filters, ranking, reranking, near-dedupe, diagnostics.
 - `apps/api/app/services/retrieval_ranking.py`: generic ranking boosts.
 - `apps/api/app/services/reranker.py`: optional CrossEncoder reranker.
-- `apps/api/app/services/prompt_builder.py`: generic prompt construction.
+- `apps/api/app/services/prompt_builder.py`: generic prompt construction and
+  retrieval-only answer formatting.
 
 ## Documentation Consistency Notes
 
@@ -130,6 +152,8 @@ Updated docs should state:
 - OPERA is the current sample corpus.
 - Reranker is optional and falls back safely.
 - Debug diagnostics include retrieval/ranking/dedupe fields.
+- Retrieval-only fallback answers are compact and based on the primary source,
+  while `sources` still exposes final retrieval results.
 
 ## Recommended Next Changes
 
