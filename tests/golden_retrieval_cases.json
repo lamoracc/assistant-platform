@@ -1,0 +1,108 @@
+[
+  {
+    "id": "package_codes_primary_answer",
+    "question": "How do I configure package codes in OPERA PMS?",
+    "expected_top_source": "package_codes.md",
+    "forbidden_answer_terms": [
+      "source codes are attached",
+      "reservation records"
+    ],
+    "candidates": [
+      {
+        "source_file": "source_codes.md",
+        "title": "Source Codes",
+        "heading": "Source Codes",
+        "score": 0.68,
+        "text": "Just like market codes, source codes are attached to reservation records in order to track how reservations come to the property. All source codes can be distributed to external systems."
+      },
+      {
+        "source_file": "package_codes.md",
+        "title": "Package Codes",
+        "heading": "Package Codes",
+        "score": 0.50,
+        "text": "Package setup involves defining package elements, or codes, and collecting these elements into groups, or packages. Each package code is set up separately before the package group is attached to a rate code or reservation."
+      },
+      {
+        "source_file": "reservation_codes.md",
+        "title": "Reservation Codes",
+        "heading": "Reservation Codes",
+        "score": 0.62,
+        "text": "Configure reservation codes used by booking workflows and reservation reporting."
+      }
+    ]
+  },
+  {
+    "id": "market_codes_top_source",
+    "question": "How do I configure market codes in OPERA PMS?",
+    "expected_top_source": "market_codes.md",
+    "candidates": [
+      {
+        "source_file": "source_codes.md",
+        "title": "Source Codes",
+        "heading": "Source Codes",
+        "score": 0.62,
+        "text": "Source codes identify where business comes from and support reporting."
+      },
+      {
+        "source_file": "market_codes.md",
+        "title": "Market Codes",
+        "heading": "Market Codes",
+        "score": 0.48,
+        "text": "Market codes classify business for reporting and analysis. They are required on reservation records and can be grouped for reporting workflows."
+      }
+    ]
+  },
+  {
+    "id": "source_codes_top_source",
+    "question": "What are source codes?",
+    "expected_top_source": "source_codes.md",
+    "candidates": [
+      {
+        "source_file": "origin_codes.md",
+        "title": "Origin Codes",
+        "heading": "Origin Codes",
+        "score": 0.58,
+        "text": "Origin codes identify how a booking originated and support operational reporting."
+      },
+      {
+        "source_file": "source_codes.md",
+        "title": "Source Codes",
+        "heading": "Source Codes",
+        "score": 0.48,
+        "text": "Source codes are used to track where reservations and business come from, such as mail, telephone, fax, central reservations, or travel agency. They are grouped into source groups for reporting."
+      }
+    ]
+  },
+  {
+    "id": "transaction_codes_general_setup",
+    "question": "How do I configure transaction codes?",
+    "expected_top_source_contains": "about_transaction_codes_setup",
+    "forbidden_top_source_contains": [
+      "back_office_interface_setup"
+    ],
+    "candidates": [
+      {
+        "source_file": "bass_back_office_interface_setup.md",
+        "title": "Back Office Interface Setup",
+        "heading": "Transaction Codes Configuration",
+        "breadcrumbs": ["Integrations", "Back Office Interface"],
+        "score": 0.58,
+        "text": "Configure transaction codes for a back office interface. Map exported financial activity to external accounting systems and vendor interface files."
+      },
+      {
+        "source_file": "about_transaction_codes_setup_1.md",
+        "title": "About Transaction Codes Setup",
+        "heading": "About Transaction Codes Setup",
+        "score": 0.46,
+        "text": "For flexible, customized configuration and efficient management reporting and administration, transaction codes are grouped into transaction groups and transaction subgroups. Transaction codes sort financial transactions and support posting setup."
+      },
+      {
+        "source_file": "transaction_codes.md",
+        "title": "Transaction Codes",
+        "heading": "Transaction Codes",
+        "score": 0.44,
+        "text": "Transaction codes define financial posting categories and can be configured for transaction setup and reporting."
+      }
+    ]
+  }
+]
