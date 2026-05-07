@@ -20,6 +20,7 @@ The core retrieval path is now mostly generic:
   lightly penalized only when the user did not ask for that context;
 - retrieval-only answer formatting is generic and focuses extractive answers on
   the top-ranked source;
+- golden retrieval cases are regression fixtures, not platform logic;
 - optional reranker is disabled unless configured;
 - OPERA is described as the current sample corpus, not as platform behavior.
 
@@ -68,9 +69,9 @@ Reviewed from the current local working copy:
 - README and overview docs;
 - metadata handling.
 
-Direct server verification was not available during this doc pass because SSH to
-the VM timed out. These findings are based on the local copy of the files last
-synced from the project.
+This review is kept in sync with the current repository state and should be
+updated whenever generic retrieval, ingestion, prompt, or source-profile logic
+changes.
 
 ## A. Acceptable Source-Specific Code
 
@@ -154,14 +155,16 @@ Updated docs should state:
 - Debug diagnostics include retrieval/ranking/dedupe fields.
 - Retrieval-only fallback answers are compact and based on the primary source,
   while `sources` still exposes final retrieval results.
+- Golden retrieval cases exist as unit-level regression fixtures and should be
+  expanded without turning sample-corpus examples into generic platform rules.
 
 ## Recommended Next Changes
 
-1. Add a `SOURCE_PROFILE` / `PARSER_PROFILE` config and move legacy HTML
+1. Add source model tables before importing unrelated corpora.
+2. Add source-level authorization before company-wide usage.
+3. Add a `SOURCE_PROFILE` / `PARSER_PROFILE` config and move legacy HTML
    selectors there.
-2. Add neutral fixtures for extractor and ranking tests.
-3. Split sample-corpus runbooks from the generic README if corpus-specific
+4. Expand golden retrieval coverage with neutral fixtures and future corpora.
+5. Split sample-corpus runbooks from the generic README if corpus-specific
    instructions grow.
-4. Add source model tables before importing unrelated corpora.
-5. Add source-level authorization before company-wide usage.
-6. Build a retrieval evaluation set and run it in CI.
+6. Run retrieval evaluation in CI and track trend metrics.

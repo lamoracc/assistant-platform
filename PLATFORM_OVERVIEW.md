@@ -37,6 +37,8 @@ The project currently provides:
 - Debug diagnostics explaining retrieval, ranking, dedupe, and final results.
 - Focused unit tests for ingestion batching, ranking, exact dedupe, and
   near-duplicate dedupe.
+- A small unit-level golden retrieval regression suite for known high-value
+  questions.
 
 ## Architecture
 
@@ -284,7 +286,8 @@ Treat this as the first loaded knowledge source, not as a product boundary.
 - No users, roles, source permissions, or audit trail.
 - No formal source model for multiple corpora and visibility rules.
 - Keyword fallback uses broad SQL `ILIKE`.
-- No production retrieval evaluation suite.
+- Golden retrieval coverage exists, but it is still small and unit-level rather
+  than a production corpus evaluation with recall/source-accuracy metrics.
 - Reranker is not enabled by default and needs latency/quality testing.
 - Retrieval-only answers are compact extractive fallbacks and do not perform
   LLM-style multi-source synthesis.
@@ -293,14 +296,16 @@ Treat this as the first loaded knowledge source, not as a product boundary.
 
 ## Prioritized Roadmap
 
-1. Harden ingestion jobs with safer multi-worker claiming, heartbeat/stale-job
-   recovery, per-file error records, and true checkpoint resume.
-2. Alembic migrations.
-3. Knowledge-source model with owner, source type, collection, visibility, and
+1. Alembic migrations. This should come before more schema growth because the
+   platform now has persistent document, chunk, asset, and ingestion-job state.
+2. Knowledge-source model with owner, source type, collection, visibility, and
    refresh policy.
-4. Authentication, authorization, and source-level access control.
+3. Authentication, authorization, and source-level access control.
+4. Harden ingestion jobs with safer multi-worker claiming, heartbeat/stale-job
+   recovery, per-file error records, and true checkpoint resume.
 5. Better lexical search, starting with PostgreSQL full-text search.
-6. Retrieval evaluation suite with golden questions and regression checks.
+6. Expand retrieval evaluation from the current small golden suite into a
+   broader CI-tracked evaluation set with source accuracy and recall metrics.
 7. Reranker evaluation profile for quality and latency.
 8. Parser/source profiles to isolate legacy HTML and corpus-specific rules.
 9. Observability: structured logs, metrics, tracing, and latency breakdowns.

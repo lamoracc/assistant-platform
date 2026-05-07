@@ -460,8 +460,9 @@ curl -X POST http://localhost:8000/debug/search \
 - Keyword search is still broad `ILIKE` SQL rather than PostgreSQL full-text
   search or a dedicated lexical search engine.
 - Reranker is optional and not enabled by default.
-- There is no formal retrieval evaluation set with metrics such as recall@k or
-  source accuracy.
+- The golden retrieval suite is still small and unit-level. It protects known
+  ranking/formatting regressions, but it is not yet a full corpus evaluation
+  with metrics such as recall@k, MRR, or source accuracy.
 - There is no production observability layer for latency, throughput, model
   load time, and ingestion progress metrics.
 - Source/parser/prompt/ranking profiles are not yet formalized.
@@ -471,14 +472,17 @@ curl -X POST http://localhost:8000/debug/search \
 
 ## Prioritized Next Steps
 
-1. Harden ingestion jobs with row-level claiming, heartbeat/stale-job recovery,
-   richer per-file error records, and checkpoint-style resume.
-2. Add Alembic migrations before expanding the schema further.
-3. Add `knowledge_sources` / source collections / visibility metadata so
+1. Add Alembic migrations before expanding the schema further. The project now
+   has persistent ingestion-job state, so schema changes should become explicit
+   and repeatable.
+2. Add `knowledge_sources` / source collections / visibility metadata so
    multiple corpora can coexist safely.
-4. Add authentication and source-level authorization before broad company use.
+3. Add authentication and source-level authorization before broad company use.
+4. Harden ingestion jobs with row-level claiming, heartbeat/stale-job recovery,
+   richer per-file error records, and checkpoint-style resume.
 5. Replace or augment `ILIKE` keyword fallback with PostgreSQL full-text search.
-6. Add a golden-question retrieval evaluation suite and track regressions.
+6. Expand the golden retrieval suite with more corpora, expected source sets,
+   answer-quality checks, and CI reporting.
 7. Test an optional reranker profile on the current corpus and measure latency
    versus quality.
 8. Formalize parser/source profiles so legacy HTML heuristics remain isolated.
