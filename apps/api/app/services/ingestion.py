@@ -2,6 +2,7 @@ import hashlib
 import logging
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from urllib.parse import urldefrag, urlparse
 
@@ -9,8 +10,9 @@ from qdrant_client.http import models as qdrant_models
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.models.document import Document, DocumentChunk, DocumentLink, ImageAsset
-from app.services.chunking import chunk_by_headings_and_paragraphs
+from app.services.chunking import TextChunk, chunk_by_headings_and_paragraphs
 from app.services.document_extractors import extract_document
 from app.services.embeddings import embed_texts
 from app.services.file_router import content_type_for_path, route_file
@@ -30,6 +32,13 @@ class IngestionError(ValueError):
 
 class EmptyDocumentError(IngestionError):
     pass
+
+
+@dataclass
+class PendingFolderDocument:
+    document: Document
+    chunks: list[TextChunk]
+    metadata: dict
 
 
 def ingest_document(
@@ -214,11 +223,16 @@ def ingest_help_folder(db: Session, root_path: str) -> dict[str, int | str]:
         "failed": 0,
         "documents_ingested": 0,
         "documents_skipped": 0,
+        "skipped_duplicate": 0,
         "images_stored": 0,
         "images_skipped": 0,
         "ignored": 0,
+        "total_chunks": 0,
+        "batch_flushes": 0,
     }
     path_to_document_id: dict[str, uuid.UUID] = {}
+    pending_batch: list[PendingFolderDocument] = []
+    pending_chunk_count = 0
 
     for path in files:
         routed = route_file(path)
@@ -248,32 +262,72 @@ def ingest_help_folder(db: Session, root_path: str) -> dict[str, int | str]:
                 existing = db.scalar(select(Document).where(Document.file_hash == file_hash))
                 if existing:
                     logger.info(
-                        "Skipping duplicate document and reindexing Qdrant chunks: %s",
+                        "Skipping duplicate document with existing file_hash: %s",
                         relative_path,
                     )
-                    reindex_document_chunks(existing)
                     path_to_document_id[relative_path] = existing.id
                     stats["documents_skipped"] += 1
-                    stats["indexed"] += 1
+                    stats["skipped_duplicate"] += 1
                     continue
 
-                document = ingest_document(
-                    db=db,
+                extracted = extract_document(
+                    content=content,
                     filename=relative_path,
                     content_type=routed.content_type,
-                    content=content,
+                )
+                chunks = [
+                    chunk
+                    for chunk in chunk_by_headings_and_paragraphs(extracted.blocks)
+                    if chunk.metadata.get("chunk_type") not in NON_INDEXED_CHUNK_TYPES
+                ]
+                if not chunks:
+                    raise EmptyDocumentError("No extractable text was found in the document.")
+
+                document = Document(
+                    filename=relative_path,
                     source_path=relative_path,
                     file_hash=file_hash,
+                    content_type=routed.content_type,
+                    source_type=_source_type(relative_path, routed.content_type),
+                    status="processing",
+                    text_length=sum(len(chunk.content) for chunk in chunks),
+                    chunk_count=len(chunks),
+                    doc_metadata=extracted.metadata,
                 )
-                path_to_document_id[relative_path] = document.id
-                stats["images_stored"] += store_referenced_image_assets(
-                    db, document, root
+                db.add(document)
+                db.flush()
+                pending_batch.append(
+                    PendingFolderDocument(
+                        document=document,
+                        chunks=chunks,
+                        metadata=extracted.metadata,
+                    )
                 )
-                stats["documents_ingested"] += 1
-                stats["indexed"] += 1
+                pending_chunk_count += len(chunks)
+
+                if pending_chunk_count >= settings.ingestion_embed_batch_chunks:
+                    _flush_folder_ingestion_batch(
+                        db=db,
+                        root=root,
+                        batch=pending_batch,
+                        stats=stats,
+                        path_to_document_id=path_to_document_id,
+                        started_at=started_at,
+                    )
+                    pending_chunk_count = 0
                 continue
 
             if routed.route == "image":
+                if pending_batch:
+                    _flush_folder_ingestion_batch(
+                        db=db,
+                        root=root,
+                        batch=pending_batch,
+                        stats=stats,
+                        path_to_document_id=path_to_document_id,
+                        started_at=started_at,
+                    )
+                    pending_chunk_count = 0
                 stats["processed"] += 1
                 logger.info("Storing standalone image asset: %s", relative_path)
                 asset = store_image_asset(db, path, root)
@@ -287,12 +341,23 @@ def ingest_help_folder(db: Session, root_path: str) -> dict[str, int | str]:
             stats["ignored"] += 1
         except EmptyDocumentError:
             logger.info("Skipping empty document: %s", relative_path)
-            db.rollback()
             stats["skipped_empty"] += 1
         except Exception:
             logger.exception("Failed to ingest %s", relative_path)
             db.rollback()
+            pending_batch.clear()
+            pending_chunk_count = 0
             stats["failed"] += 1
+
+    if pending_batch:
+        _flush_folder_ingestion_batch(
+            db=db,
+            root=root,
+            batch=pending_batch,
+            stats=stats,
+            path_to_document_id=path_to_document_id,
+            started_at=started_at,
+        )
 
     resolved = resolve_document_links(db, path_to_document_id)
     elapsed_seconds = round(time.monotonic() - started_at, 2)
@@ -302,12 +367,133 @@ def ingest_help_folder(db: Session, root_path: str) -> dict[str, int | str]:
     return stats
 
 
+def _flush_folder_ingestion_batch(
+    db: Session,
+    root: Path,
+    batch: list[PendingFolderDocument],
+    stats: dict[str, int | str | dict[str, int]],
+    path_to_document_id: dict[str, uuid.UUID],
+    started_at: float,
+) -> None:
+    if not batch:
+        return
+
+    chunk_refs: list[tuple[PendingFolderDocument, int, TextChunk]] = []
+    texts_to_embed: list[str] = []
+    for pending in batch:
+        for chunk_index, chunk in enumerate(pending.chunks):
+            chunk_refs.append((pending, chunk_index, chunk))
+            texts_to_embed.append(chunk.content)
+
+    logger.warning(
+        "Folder import embedding batch start processed=%s indexed=%s skipped_empty=%s failed=%s docs=%s chunks=%s total_chunks=%s elapsed_seconds=%.2f",
+        stats["processed"],
+        stats["indexed"],
+        stats["skipped_empty"],
+        stats["failed"],
+        len(batch),
+        len(texts_to_embed),
+        stats["total_chunks"],
+        time.monotonic() - started_at,
+    )
+
+    try:
+        embeddings = embed_texts(texts_to_embed)
+        if len(embeddings) != len(chunk_refs):
+            raise IngestionError(
+                f"Embedding count mismatch: expected {len(chunk_refs)}, got {len(embeddings)}"
+            )
+
+        qdrant_points: list[qdrant_models.PointStruct] = []
+        for (pending, chunk_index, chunk), embedding in zip(chunk_refs, embeddings):
+            document = pending.document
+            filename = document.filename
+            vector_id = str(uuid.uuid5(document.id, f"{filename}:{chunk_index}"))
+            chunk_content = sanitize_text(chunk.content)
+            chunk_heading = sanitize_text(chunk.heading)
+            chunk_metadata = _sanitize_metadata(chunk.metadata)
+            db.add(
+                DocumentChunk(
+                    document_id=document.id,
+                    vector_id=vector_id,
+                    chunk_index=chunk_index,
+                    heading=chunk_heading,
+                    content=chunk_content,
+                    char_count=len(chunk_content),
+                    chunk_metadata=chunk_metadata,
+                )
+            )
+            qdrant_points.append(
+                qdrant_models.PointStruct(
+                    id=vector_id,
+                    vector=embedding,
+                    payload={
+                        "document_id": str(document.id),
+                        "filename": filename,
+                        "source": document.source_path or filename,
+                        "content_type": document.content_type,
+                        "chunk_index": chunk_index,
+                        "heading": chunk_heading,
+                        "text": chunk_content,
+                        "language": chunk_metadata.get("language"),
+                        "chunk_type": chunk_metadata.get("chunk_type"),
+                        **chunk_metadata,
+                    },
+                )
+            )
+
+        db.flush()
+        upsert_document_chunks(qdrant_points)
+
+        images_stored = 0
+        for pending in batch:
+            document = pending.document
+            _store_document_links(db, document, pending.metadata)
+            _store_referenced_images(db, document, pending.metadata)
+            images_stored += store_referenced_image_assets(
+                db=db,
+                document=document,
+                root=root,
+                commit=False,
+            )
+            document.status = "ingested"
+
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    for pending in batch:
+        document = pending.document
+        if document.source_path:
+            path_to_document_id[document.source_path] = document.id
+
+    stats["documents_ingested"] += len(batch)
+    stats["indexed"] += len(batch)
+    stats["images_stored"] += images_stored
+    stats["total_chunks"] += len(texts_to_embed)
+    stats["batch_flushes"] += 1
+    logger.warning(
+        "Folder import embedding batch committed processed=%s indexed=%s skipped_empty=%s failed=%s docs=%s chunks=%s total_chunks=%s elapsed_seconds=%.2f",
+        stats["processed"],
+        stats["indexed"],
+        stats["skipped_empty"],
+        stats["failed"],
+        len(batch),
+        len(texts_to_embed),
+        stats["total_chunks"],
+        time.monotonic() - started_at,
+    )
+    batch.clear()
+
+
 def store_image_asset(
     db: Session,
     path: Path,
     root: Path,
     referenced_by_document: Document | None = None,
     referenced_src: str | None = None,
+    commit: bool = True,
 ) -> ImageAsset | None:
     relative_path = path.relative_to(root).as_posix()
     width, height = _image_dimensions(path)
@@ -341,8 +527,9 @@ def store_image_asset(
         asset_metadata={"referenced_src": referenced_src} if referenced_src else {},
     )
     db.add(asset)
-    db.commit()
-    db.refresh(asset)
+    if commit:
+        db.commit()
+        db.refresh(asset)
     return asset
 
 
@@ -350,6 +537,7 @@ def store_referenced_image_assets(
     db: Session,
     document: Document,
     root: Path,
+    commit: bool = True,
 ) -> int:
     stored = 0
     for image_ref in document.doc_metadata.get("image_refs", []):
@@ -363,6 +551,7 @@ def store_referenced_image_assets(
             root=root,
             referenced_by_document=document,
             referenced_src=src,
+            commit=commit,
         )
         if asset:
             stored += 1

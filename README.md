@@ -2,6 +2,12 @@
 
 A scalable project skeleton for a RAG-based work assistant.
 
+For a broader product and architecture overview, including strengths,
+weaknesses, risks, and future roadmap, see
+[`PLATFORM_OVERVIEW.md`](PLATFORM_OVERVIEW.md). For the latest generic
+architecture and source-specific hardcoding audit, see
+[`GENERIC_PLATFORM_AUDIT.md`](GENERIC_PLATFORM_AUDIT.md).
+
 ## Stack
 
 - FastAPI backend
@@ -53,11 +59,21 @@ Docker Compose already provides the same defaults to the services:
 - `TRANSFORMERS_CACHE`: Transformers model cache path
 - `SENTENCE_TRANSFORMERS_HOME`: sentence-transformers cache path
 - `UPLOAD_MAX_BYTES`: maximum accepted upload size
-- `RETRIEVAL_TOP_K`: number of chunks to retrieve for chat queries
+- `RETRIEVAL_TOP_K`: legacy final source count fallback
+- `RETRIEVAL_CANDIDATE_K`: vector candidates retrieved before ranking/reranking
+- `RETRIEVAL_FINAL_K`: final source count returned to the user
+- `RETRIEVAL_KEYWORD_CANDIDATE_K`: keyword candidates retrieved before ranking/reranking
 - `RETRIEVAL_MIN_SCORE`: minimum Qdrant similarity score for vector hits
+- `RETRIEVAL_NEAR_DUPLICATE_DEDUPE`: enable retrieval-time near-duplicate grouping
+- `RETRIEVAL_NEAR_DUPLICATE_THRESHOLD`: normalized content similarity threshold
+- `RETRIEVAL_MAX_NEAR_DUPLICATES_PER_GROUP`: number of near-duplicate chunks to keep
 - `MAX_CONTEXT_CHARS`: maximum retrieved context passed to answer generation
 - `LLM_PROVIDER_URL`: optional OpenAI-compatible local LLM base URL
 - `LLM_MODEL_NAME`: optional model name for the configured LLM provider
+- `RERANKER_MODEL_NAME`: optional `sentence-transformers` CrossEncoder reranker
+- `RERANKER_BATCH_SIZE`: reranker scoring batch size
+- `ASSISTANT_SYSTEM_PROMPT`: optional assistant system prompt override
+- `PRESERVE_SOURCE_TERMS_INSTRUCTION`: optional source-term preservation instruction
 
 ## Setup
 
@@ -204,7 +220,7 @@ stores HTML metadata:
 - `main_heading`
 - `document_type = html`
 
-## OPERA Help Folder Import
+## First Dataset: OPERA Help Folder Import
 
 Import a full OPERA PMS help folder from a path available inside the API
 container:
@@ -254,30 +270,72 @@ curl -X POST http://localhost:8000/chat/query \
 The query pipeline:
 
 1. Embed the question with the configured `sentence-transformers` model.
-2. Search Qdrant collection `document_chunks` with `top_k=8` by default.
+2. Search Qdrant collection `document_chunks` with `RETRIEVAL_CANDIDATE_K=80`
+   by default.
 3. Filter vector results below `RETRIEVAL_MIN_SCORE`, default `0.55`.
 4. Run a PostgreSQL keyword fallback over chunk content, headings, filenames,
    source paths, and HTML title metadata.
 5. Apply optional metadata filters.
-6. Retrieve up to 40 vector candidates and 40 keyword candidates.
-7. Merge and deduplicate candidates by `document_id + chunk_index`.
+6. Retrieve vector and keyword candidates separately before final assembly.
+7. Merge exact duplicate candidates by normalized chunk content.
 8. Apply generic ranking signals:
    exact phrase matches, strong query-term coverage, title/heading matches over
    body-only matches, useful chunk types, and focused chunk length.
-9. Pass final candidates through a reranker-ready interface.
-10. Build a bounded context from retrieved chunks.
-11. Return an LLM answer when `LLM_PROVIDER_URL` is configured.
-12. Return a retrieval-only answer with sources when no LLM endpoint is configured.
+9. Pass final candidates through a reranker-ready interface. If
+   `RERANKER_MODEL_NAME` is set, a `sentence-transformers` CrossEncoder such as
+   `BAAI/bge-reranker-v2-m3` can rescore candidates. If it is not set or fails
+   to load, generic ranking is used unchanged.
+10. Optionally group near-duplicate chunks by normalized body similarity.
+11. Build a bounded context from retrieved chunks.
+12. Return an LLM answer when `LLM_PROVIDER_URL` is configured.
+13. Return a retrieval-only answer with sources when no LLM endpoint is configured.
 
 Russian questions use the multilingual embedding model to retrieve English
-documentation. When an LLM provider is configured, Russian questions instruct
-the assistant to answer in Russian while preserving OPERA UI terms, menu names,
-field labels, and button names in English.
+documentation. When an LLM provider is configured, the prompt asks the assistant
+to answer in the user's language while preserving product names, UI terms, menu
+names, field labels, and button names as they appear in the source material.
 
 When `debug=true`, the response includes retrieval diagnostics with raw vector
-scores, filtered reasons, collection name, `top_k`, and `min_score`. If all
-vector scores are below threshold and no keyword fallback matches, `sources`
-will be empty.
+scores, retrieval-stage score, keyword score, metadata boosts, reranker score
+when present, final score, filtered reasons, collection name, candidate counts,
+`final_k`, and `min_score`. If all vector scores are below threshold and no
+keyword fallback matches, `sources` will be empty.
+
+### Retrieval Deduplication
+
+Deduplication is retrieval-only. It does not delete documents, chunks, or
+vectors from PostgreSQL or Qdrant.
+
+Exact duplicate dedupe removes candidates with the same normalized chunk
+fingerprint. The fingerprint is based on heading plus normalized content, not on
+filename. Filenames are used only in diagnostics.
+
+Near-duplicate dedupe runs after ranking and exact duplicate dedupe, before the
+final `top_k` response is assembled. It compares normalized body content with a
+high similarity threshold, ignoring YAML front matter, breadcrumbs, image-only
+lines, previous/next navigation, markdown URLs, and punctuation noise while
+preserving visible link text. When a query term appears in metadata such as
+title, breadcrumbs, or section group, the matching context version is preferred
+within a near-duplicate group.
+
+Tune or disable near-duplicate grouping with environment variables:
+
+```env
+RETRIEVAL_NEAR_DUPLICATE_DEDUPE=true
+RETRIEVAL_NEAR_DUPLICATE_THRESHOLD=0.92
+RETRIEVAL_MAX_NEAR_DUPLICATES_PER_GROUP=1
+```
+
+Disable it for debugging:
+
+```env
+RETRIEVAL_NEAR_DUPLICATE_DEDUPE=false
+```
+
+When `debug=true`, exact duplicates use
+`filtered_reason="duplicate_content"`. Near duplicates use
+`filtered_reason="near_duplicate_content"` and include `duplicate_of` plus a
+`similarity` score.
 
 Example response:
 

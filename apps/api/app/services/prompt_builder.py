@@ -1,12 +1,6 @@
 from app.core.config import settings
-from app.services.language import is_russian
 from app.services.retrieval import RetrievedChunk
 from app.services.text_sanitizer import sanitize_text
-
-OPERA_SYSTEM_PROMPT = """You are an OPERA PMS support assistant.
-Answer questions using only the retrieved OPERA documentation context.
-Be precise, operational, and cite the relevant source files or headings.
-If the context is insufficient, say what is missing instead of guessing."""
 
 
 def build_context(
@@ -42,20 +36,16 @@ def build_context(
 
 def build_chat_prompt(question: str, chunks: list[RetrievedChunk]) -> list[dict[str, str]]:
     context = build_context(chunks)
-    language_instruction = (
-        "Answer in Russian. Preserve original OPERA UI terms, menu names, field "
-        "labels, and button names in English."
-        if is_russian(question)
-        else "Answer in the same language as the user when possible."
-    )
+    language_instruction = "Answer in the same language as the user when possible."
     user_prompt = (
-        "Use the following retrieved OPERA PMS documentation context to answer.\n\n"
+        "Use the following retrieved documentation context to answer.\n\n"
         f"{language_instruction}\n\n"
+        f"{settings.preserve_source_terms_instruction}\n\n"
         f"Context:\n{context}\n\n"
         f"Question: {sanitize_text(question)}"
     )
     return [
-        {"role": "system", "content": OPERA_SYSTEM_PROMPT},
+        {"role": "system", "content": settings.assistant_system_prompt},
         {"role": "user", "content": user_prompt},
     ]
 
@@ -66,13 +56,12 @@ def build_retrieval_only_answer(
 ) -> str:
     if not chunks:
         return (
-            "I could not find relevant OPERA PMS documentation chunks for that "
-            "question."
+            "I could not find relevant documentation chunks for that question."
         )
 
     context = build_context(chunks, max_chars=2000)
     return (
         "No LLM provider is configured, so this is a retrieval-only response. "
-        "The most relevant OPERA PMS documentation excerpts are:\n\n"
+        "The most relevant documentation excerpts are:\n\n"
         f"{context}"
     )

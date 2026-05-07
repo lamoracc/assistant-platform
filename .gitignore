@@ -12,7 +12,6 @@ data/
 .vscode/
 
 hf_cache/
-models/
 
 qdrant_storage/
 postgres_data/
