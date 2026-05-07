@@ -11,7 +11,13 @@ from app.models.document import Document, DocumentChunk
 from app.services.embeddings import embed_texts
 from app.services.qdrant_store import get_qdrant_client
 from app.services.reranker import get_reranker
-from app.services.retrieval_ranking import RetrievedChunk, query_terms, rank_candidates
+from app.services.retrieval_ranking import (
+    RetrievedChunk,
+    query_context_terms,
+    query_phrases,
+    query_terms,
+    rank_candidates,
+)
 from app.services.text_sanitizer import sanitize_text
 
 @dataclass(frozen=True)
@@ -309,7 +315,8 @@ def _dedupe_near_duplicates(
 
     diagnostics: list[dict[str, Any]] = []
     kept_chunks: list[RetrievedChunk] = []
-    query_context_terms = set(query_terms(query))
+    context_terms = set(query_context_terms(query, include_generic_terms=True))
+    phrase_terms = set(query_phrases(query))
 
     for group in groups:
         if len(group) <= max_per_group:
@@ -318,7 +325,11 @@ def _dedupe_near_duplicates(
 
         ordered_group = sorted(
             group,
-            key=lambda chunk: _near_duplicate_preference_key(query_context_terms, chunk),
+            key=lambda chunk: _near_duplicate_preference_key(
+                context_terms,
+                phrase_terms,
+                chunk,
+            ),
             reverse=True,
         )
         kept = ordered_group[:max_per_group]
@@ -417,11 +428,17 @@ def _token_set_similarity(left: set[str], right: set[str]) -> float:
 
 def _near_duplicate_preference_key(
     query_context_terms: set[str],
+    query_phrases: set[str],
     chunk: RetrievedChunk,
-) -> tuple[int, float]:
+) -> tuple[int, int, float]:
     context_text = _metadata_context_text(chunk)
     context_matches = sum(1 for term in query_context_terms if term in context_text)
-    return (context_matches, float(chunk.score or chunk.raw_score or 0.0))
+    phrase_matches = sum(1 for phrase in query_phrases if phrase in context_text)
+    return (
+        context_matches,
+        phrase_matches,
+        float(chunk.score or chunk.raw_score or 0.0),
+    )
 
 
 def _metadata_context_text(chunk: RetrievedChunk) -> str:
@@ -435,12 +452,43 @@ def _metadata_context_text(chunk: RetrievedChunk) -> str:
         "document_id",
         "chunk_index",
     }
-    values: list[Any] = [chunk.metadata.get("title"), chunk.metadata.get("breadcrumbs")]
+    values: list[Any] = [
+        chunk.metadata.get("title"),
+        chunk.metadata.get("breadcrumbs"),
+        _body_context_text(chunk.text),
+    ]
     for key, value in metadata.items():
         if str(key) in ignored_keys:
             continue
         values.append(value)
     return _normalize_for_fingerprint(" ".join(_flatten_metadata_values(values)))
+
+
+def _body_context_text(value: Any) -> str:
+    """Extract generic context lines embedded in chunk text.
+
+    Some corpora store breadcrumbs/front-matter in the body instead of structured
+    metadata. Use only breadcrumb-like or YAML-like context lines, not the full
+    body, so near-duplicate selection can prefer the user's requested context
+    without turning body content into a primary duplicate preference signal.
+    """
+
+    text = sanitize_text(value).replace("\r\n", "\n").replace("\r", "\n")
+    context_lines: list[str] = []
+    in_front_matter = False
+    for raw_line in text.splitlines()[:20]:
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line == "---":
+            in_front_matter = not in_front_matter
+            continue
+        if in_front_matter:
+            context_lines.append(line)
+            continue
+        if _is_breadcrumb_line(line):
+            context_lines.append(line)
+    return " ".join(context_lines)
 
 
 def _flatten_metadata_values(values: list[Any]) -> list[str]:

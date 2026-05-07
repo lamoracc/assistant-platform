@@ -64,6 +64,87 @@ class MetadataAwareRankingTests(unittest.TestCase):
         self.assertEqual(ranked[0].source_file, "package-codes.md")
         self.assertIn("query_phrase_in_metadata", ranked[0].ranking_reason)
 
+    def test_body_only_phrase_does_not_outrank_exact_heading_match(self) -> None:
+        target = chunk(
+            "Create and maintain reusable bundled-service codes.",
+            title="Package Codes",
+            heading="Package Codes",
+            source_file="package-codes.md",
+            score=0.4,
+        )
+        body_only = chunk(
+            (
+                "Use the package codes field during export mapping to align "
+                "external records with downstream configuration."
+            ),
+            title="Export Mapping",
+            heading="Export Mapping",
+            source_file="export-mapping.md",
+            score=0.8,
+        )
+
+        ranked = rank_candidates("package codes", [body_only, target])
+
+        self.assertEqual(ranked[0].source_file, "package-codes.md")
+        self.assertIn("query_phrase_in_metadata", ranked[0].ranking_reason)
+        self.assertNotIn("query_phrase_in_metadata", ranked[1].ranking_reason)
+
+    def test_generic_acronym_context_term_boosts_metadata_match(self) -> None:
+        contextual = chunk(
+            "Create and maintain reusable bundled-service codes.",
+            title="Package Codes",
+            heading="Package Codes",
+            source_file="package-codes-context.md",
+            score=0.4,
+            breadcrumbs=["Product Family", "PMS"],
+        )
+        other_context = chunk(
+            "Create and maintain reusable bundled-service codes.",
+            title="Package Codes",
+            heading="Package Codes",
+            source_file="package-codes-other-context.md",
+            score=0.45,
+            breadcrumbs=["Product Family", "ORS", "OCIS"],
+        )
+
+        ranked = rank_candidates(
+            "How do I configure package codes in PMS?",
+            [other_context, contextual],
+        )
+
+        self.assertEqual(ranked[0].source_file, "package-codes-context.md")
+        self.assertIn("query_context_in_metadata", ranked[0].ranking_reason)
+
+    def test_context_terms_do_not_act_as_topical_metadata_terms(self) -> None:
+        context_only = chunk(
+            "General product configuration and links.",
+            title="PMS Administration",
+            heading="PMS Administration",
+            source_file="pms-admin.md",
+            score=0.65,
+        )
+        topical = chunk(
+            "Create and maintain reusable bundled-service codes.",
+            title="Package Codes",
+            heading="Package Codes",
+            source_file="package-codes.md",
+            score=0.45,
+        )
+
+        ranked = rank_candidates(
+            "How do I configure package codes in PMS?",
+            [context_only, topical],
+        )
+
+        self.assertEqual(ranked[0].source_file, "package-codes.md")
+        ranked_context_only = next(
+            item for item in ranked if item.source_file == "pms-admin.md"
+        )
+        self.assertNotIn(
+            "strong_terms_in_metadata",
+            ranked_context_only.ranking_reason or [],
+        )
+
     def test_rate_code_query_prefers_rate_code_documents(self) -> None:
         target = chunk(
             "A rate code controls pricing rules, availability, and selling behavior.",

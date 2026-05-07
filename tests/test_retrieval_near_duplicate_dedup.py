@@ -109,6 +109,64 @@ class RetrievalNearDuplicateDedupTests(unittest.TestCase):
         self.assertEqual(deduped[0].source_file, "context.md")
         self.assertEqual(diagnostics[0]["duplicate_of"]["source_file"], "context.md")
 
+    def test_acronym_context_term_prefers_matching_metadata_version(self) -> None:
+        first_context = chunk(
+            BODY,
+            source_file="first-context.md",
+            score=0.9,
+            metadata={
+                "title": "Package Codes",
+                "breadcrumbs": ["Product Family", "ORS", "OCIS"],
+            },
+        )
+        second_context = chunk(
+            f"{BODY} Extra note.",
+            source_file="second-context.md",
+            score=0.5,
+            metadata={
+                "title": "Package Codes",
+                "breadcrumbs": ["Product Family", "PMS"],
+            },
+        )
+
+        deduped, diagnostics = _dedupe_near_duplicates(
+            "configure package codes in PMS",
+            [first_context, second_context],
+        )
+
+        self.assertEqual(len(deduped), 1)
+        self.assertEqual(deduped[0].source_file, "second-context.md")
+        self.assertEqual(
+            diagnostics[0]["duplicate_of"]["source_file"],
+            "second-context.md",
+        )
+
+    def test_embedded_breadcrumb_context_prefers_matching_version(self) -> None:
+        first_context = chunk(
+            f"[Home] > [Packages - ORS/OCIS]\n\n{BODY}",
+            source_file="first-context.md",
+            score=0.9,
+            metadata={"title": "Package Codes"},
+        )
+        second_context = chunk(
+            f"[Home] > [Packages - PMS]\n\n{BODY} Extra note.",
+            source_file="second-context.md",
+            score=0.5,
+            metadata={"title": "Package Codes"},
+        )
+
+        deduped, diagnostics = _dedupe_near_duplicates(
+            "configure package codes in PMS",
+            [first_context, second_context],
+        )
+
+        self.assertEqual(len(deduped), 1)
+        self.assertEqual(deduped[0].source_file, "second-context.md")
+        self.assertEqual(
+            diagnostics[0]["duplicate_of"]["source_file"],
+            "second-context.md",
+        )
+
     def test_same_heading_with_different_body_content_is_preserved(self) -> None:
         first = chunk(
             "Create a record by filling out required customer information and saving.",

@@ -52,7 +52,11 @@ def rank_candidates(question: str, chunks: list[RetrievedChunk]) -> list[Retriev
     phrase = _normalize_for_match(question)
     terms = query_terms(question)
     phrases = query_phrases(question)
-    ranked = [_with_generic_score(chunk, phrase, terms, phrases) for chunk in chunks]
+    context_terms = query_context_terms(question)
+    ranked = [
+        _with_generic_score(chunk, phrase, terms, phrases, context_terms)
+        for chunk in chunks
+    ]
     return sorted(ranked, key=lambda chunk: chunk.score, reverse=True)
 
 
@@ -74,11 +78,43 @@ def query_phrases(question: str) -> list[str]:
     return list(dict.fromkeys(phrases))
 
 
+def query_context_terms(question: str, *, include_generic_terms: bool = False) -> list[str]:
+    """Return query terms that are likely to name a source/product context.
+
+    This intentionally uses generic shape-based signals instead of a domain
+    dictionary: uppercase acronyms, slash-separated acronyms, and mixed
+    alpha-numeric identifiers. These terms are useful for choosing between
+    near-duplicate variants with different breadcrumbs or product contexts.
+    """
+
+    context_terms: list[str] = []
+    for raw in sanitize_text(question).split():
+        stripped = raw.strip(string.punctuation)
+        parts = [part for part in re.split(r"[/\\|]+", stripped) if part]
+        for part in parts:
+            cleaned = "".join(char for char in part if char.isalnum() or char in {"_", "-"})
+            if len(cleaned) < 2:
+                continue
+            has_alpha = any(char.isalpha() for char in cleaned)
+            if not has_alpha:
+                continue
+            is_acronym = cleaned.upper() == cleaned and any(char.isupper() for char in cleaned)
+            is_identifier = any(char.isdigit() for char in cleaned) and any(
+                char.isalpha() for char in cleaned
+            )
+            if is_acronym or is_identifier:
+                context_terms.append(cleaned.lower())
+    if include_generic_terms:
+        context_terms.extend(query_terms(question))
+    return list(dict.fromkeys(context_terms))
+
+
 def _with_generic_score(
     chunk: RetrievedChunk,
     phrase: str,
     terms: list[str],
     phrases: list[str],
+    context_terms: list[str],
 ) -> RetrievedChunk:
     title = _normalize_for_match(chunk.metadata.get("title"))
     heading = _normalize_for_match(chunk.heading)
@@ -95,6 +131,7 @@ def _with_generic_score(
         "all_terms_body": 0.0,
         "term_metadata": 0.0,
         "term_body": 0.0,
+        "context_metadata": 0.0,
         "chunk_type": 0.0,
         "length": 0.0,
         "hybrid": 0.0,
@@ -106,38 +143,44 @@ def _with_generic_score(
 
     score = base
     metadata_text = " ".join([title, heading, breadcrumbs])
+    topical_terms = [term for term in terms if term not in set(context_terms)]
 
     if phrase and phrase in metadata_text:
-        boosts["exact_phrase_metadata"] = 0.55
+        boosts["exact_phrase_metadata"] = 0.75
         reasons.append("exact_phrase_in_metadata")
     elif phrase and phrase in body:
-        boosts["exact_phrase_body"] = 0.25
+        boosts["exact_phrase_body"] = 0.08
         reasons.append("exact_phrase_in_content")
 
     metadata_phrase_matches = [item for item in phrases if item in metadata_text]
     body_phrase_matches = [item for item in phrases if item in body]
     if metadata_phrase_matches:
-        boosts["query_phrase_metadata"] = min(0.40, 0.16 * len(metadata_phrase_matches))
+        boosts["query_phrase_metadata"] = min(0.95, 0.35 * len(metadata_phrase_matches))
         reasons.append("query_phrase_in_metadata")
     elif body_phrase_matches:
-        boosts["query_phrase_body"] = min(0.18, 0.07 * len(body_phrase_matches))
+        boosts["query_phrase_body"] = min(0.07, 0.025 * len(body_phrase_matches))
         reasons.append("query_phrase_in_content")
 
-    if terms and all(term in metadata_text for term in terms):
-        boosts["all_terms_metadata"] = 0.30
+    if topical_terms and all(term in metadata_text for term in topical_terms):
+        boosts["all_terms_metadata"] = 0.45
         reasons.append("all_strong_terms_in_metadata")
-    elif terms and all(term in body for term in terms):
-        boosts["all_terms_body"] = 0.14
+    elif topical_terms and all(term in body for term in topical_terms):
+        boosts["all_terms_body"] = 0.04
         reasons.append("all_strong_terms_in_content")
-    elif terms:
-        matched_title_terms = sum(1 for term in terms if term in metadata_text)
-        matched_body_terms = sum(1 for term in terms if term in body)
+    elif topical_terms:
+        matched_title_terms = sum(1 for term in topical_terms if term in metadata_text)
+        matched_body_terms = sum(1 for term in topical_terms if term in body)
         if matched_title_terms:
-            boosts["term_metadata"] = 0.06 * matched_title_terms
+            boosts["term_metadata"] = min(0.36, 0.09 * matched_title_terms)
             reasons.append("strong_terms_in_metadata")
         if matched_body_terms:
-            boosts["term_body"] = 0.02 * matched_body_terms
+            boosts["term_body"] = min(0.06, 0.012 * matched_body_terms)
             reasons.append("strong_terms_in_content")
+
+    context_matches = [term for term in context_terms if term in metadata_text]
+    if context_matches:
+        boosts["context_metadata"] = min(0.24, 0.12 * len(context_matches))
+        reasons.append("query_context_in_metadata")
 
     if chunk_type in PREFERRED_CHUNK_TYPES:
         boosts["chunk_type"] = 0.08
