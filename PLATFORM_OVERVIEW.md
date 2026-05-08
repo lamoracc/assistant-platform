@@ -179,12 +179,15 @@ workflow can still surface those more specific pages.
 `RERANKER_MODEL_NAME` is optional.
 
 - Empty value: no-op reranker, generic ranking remains final.
-- Configured value: `sentence_transformers.CrossEncoder` scores each
-  `(question, chunk text)` pair.
+- Configured value: `sentence_transformers.CrossEncoder` scores
+  `(question, chunk text)` pairs for the top `RERANKER_TOP_N` candidates after
+  generic ranking. The reranker score is used as a weighted boost, so generic
+  metadata/ranking signals remain the main relevance guardrail.
 - Load failure: exception is logged and retrieval falls back to generic ranking.
 
 This means the platform can run without a reranker on CPU-only or minimal
-deployments.
+deployments. On CPU-only deployments, keep `RERANKER_TOP_N` bounded to avoid
+large latency spikes.
 
 ## Deduplication Behavior
 

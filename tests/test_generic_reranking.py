@@ -1,9 +1,12 @@
 import sys
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1] / "apps" / "api"))
 
+from app.services import reranker
+from app.services.reranker import CrossEncoderReranker
 from app.services.retrieval_ranking import RetrievedChunk, rank_candidates
 
 
@@ -116,6 +119,39 @@ class GenericRerankingTests(unittest.TestCase):
             "Run Production Report",
             "Open Reports, select the production report, choose parameters, and run.",
         )
+
+    def test_cross_encoder_reranks_only_configured_top_n(self) -> None:
+        class FakeModel:
+            def predict(self, pairs, batch_size):
+                self.pairs = pairs
+                self.batch_size = batch_size
+                return [0.2, 0.9]
+
+        original_settings = reranker.settings
+        fake_model = FakeModel()
+        service = object.__new__(CrossEncoderReranker)
+        service.model = fake_model
+        chunks = [
+            chunk("first", title="First", heading="First", score=0.8),
+            chunk("second", title="Second", heading="Second", score=0.7),
+            chunk("third", title="Third", heading="Third", score=0.6),
+        ]
+
+        try:
+            reranker.settings = replace(
+                reranker.settings,
+                reranker_top_n=2,
+                reranker_batch_size=4,
+            )
+            reranked = service.rerank("question", chunks)
+        finally:
+            reranker.settings = original_settings
+
+        self.assertEqual([item.document for item in reranked], ["Second.md", "First.md", "Third.md"])
+        self.assertAlmostEqual(reranked[0].score, 0.835)
+        self.assertEqual(len(fake_model.pairs), 2)
+        self.assertEqual(fake_model.batch_size, 4)
+        self.assertIsNone(reranked[2].reranker_score)
 
 
 if __name__ == "__main__":

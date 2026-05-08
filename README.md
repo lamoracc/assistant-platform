@@ -119,6 +119,10 @@ Reranker:
 - `RERANKER_MODEL_NAME`: optional CrossEncoder model, for example
   `BAAI/bge-reranker-v2-m3`.
 - `RERANKER_BATCH_SIZE`: reranker batch size.
+- `RERANKER_TOP_N`: number of already-ranked candidates to rerank. Keeping this
+  bounded is important on CPU-only deployments.
+- `RERANKER_WEIGHT`: how much reranker score contributes to final score. The
+  generic score remains the main ranking signal.
 
 If `LLM_PROVIDER_URL` is empty, `/chat/query` still works in retrieval-only
 mode and returns a compact structured answer built from the top retrieved
@@ -360,8 +364,10 @@ the penalty is not applied.
 
 Reranking is optional. With no `RERANKER_MODEL_NAME`, `get_reranker()` returns a
 no-op reranker. When configured, the CrossEncoder scores `(question, chunk)`
-pairs and replaces final ranking score with the reranker score. Model load
-failures are logged and fall back to generic ranking.
+pairs for the top `RERANKER_TOP_N` already-ranked candidates and adds the
+weighted reranker score to the generic score. Remaining candidates keep their
+generic ranking order below the reranked set. Model load failures are logged and
+fall back to generic ranking.
 
 ## Deduplication
 
