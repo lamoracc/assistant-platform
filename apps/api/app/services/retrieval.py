@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 import re
 import string
+from time import perf_counter
 from typing import Any
 
 from sqlalchemy import String, cast, or_, select
@@ -33,24 +34,55 @@ def retrieve_chunks(
     min_score: float | None = None,
     filters: dict[str, Any] | None = None,
 ) -> RetrievalResult:
+    total_start = perf_counter()
+    timings: dict[str, float] = {
+        "vector_ms": 0.0,
+        "keyword_ms": 0.0,
+        "ranking_ms": 0.0,
+        "dedupe_ms": 0.0,
+        "reranker_ms": 0.0,
+        "answer_builder_ms": 0.0,
+        "total_ms": 0.0,
+    }
     query = sanitize_text(question)
     final_limit = top_k or settings.retrieval_final_k
     candidate_limit = max(settings.retrieval_candidate_k, final_limit)
     keyword_candidate_limit = max(settings.retrieval_keyword_candidate_k, final_limit)
     threshold = min_score if min_score is not None else settings.retrieval_min_score
 
+    stage_start = perf_counter()
     vector_hits, vector_diagnostics = _vector_search(
         query,
         candidate_limit,
         threshold,
     )
+    timings["vector_ms"] = _elapsed_ms(stage_start)
+
+    stage_start = perf_counter()
     keyword_hits = _keyword_search(query, db, keyword_candidate_limit)
+    timings["keyword_ms"] = _elapsed_ms(stage_start)
+
+    stage_start = perf_counter()
     merged, duplicate_diagnostics = _merge_hits(vector_hits, keyword_hits)
+    timings["merge_ms"] = _elapsed_ms(stage_start)
+
     filtered = [chunk for chunk in merged if _matches_filters(chunk, filters)]
+
+    stage_start = perf_counter()
     ranked = rank_candidates(query, filtered)
-    reranked = get_reranker().rerank(query, ranked)
+    timings["ranking_ms"] = _elapsed_ms(stage_start)
+
+    stage_start = perf_counter()
+    reranker = get_reranker()
+    reranked = reranker.rerank(query, ranked)
+    if getattr(reranker, "enabled", False):
+        timings["reranker_ms"] = _elapsed_ms(stage_start)
+
+    stage_start = perf_counter()
     deduped, near_duplicate_diagnostics = _dedupe_near_duplicates(query, reranked)
+    timings["dedupe_ms"] = _elapsed_ms(stage_start)
     chunks = deduped[:final_limit]
+    timings["total_ms"] = _elapsed_ms(total_start)
 
     diagnostics = {
         "collection_name": settings.qdrant_collection_name,
@@ -69,8 +101,13 @@ def retrieve_chunks(
             + near_duplicate_diagnostics
         ),
         "final_results": [_diagnostic_for_hit(hit) for hit in chunks],
+        "timings": timings,
     }
     return RetrievalResult(chunks=chunks, diagnostics=diagnostics)
+
+
+def _elapsed_ms(start: float) -> float:
+    return round((perf_counter() - start) * 1000, 3)
 
 
 def _matches_filters(chunk: RetrievedChunk, filters: dict[str, Any] | None) -> bool:

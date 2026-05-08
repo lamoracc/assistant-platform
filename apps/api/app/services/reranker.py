@@ -9,11 +9,15 @@ logger = logging.getLogger(__name__)
 
 
 class Reranker:
+    enabled = False
+
     def rerank(self, question: str, chunks: list[Any]) -> list[Any]:
         return chunks
 
 
 class CrossEncoderReranker(Reranker):
+    enabled = True
+
     def __init__(self, model_name: str) -> None:
         from sentence_transformers import CrossEncoder
 

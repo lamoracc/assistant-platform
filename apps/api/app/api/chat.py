@@ -1,4 +1,5 @@
 from typing import Any
+from time import perf_counter
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
@@ -45,9 +46,18 @@ def query_chat(
     question = sanitize_text(request.question)
     retrieval = retrieve_chunks(question, db, filters=request.filters)
     chunks = retrieval.chunks
+    answer_start = perf_counter()
     messages = build_chat_prompt(question, chunks)
     provider_answer = get_llm_provider().generate(messages)
     answer = provider_answer or build_retrieval_only_answer(question, chunks)
+    answer_builder_ms = round((perf_counter() - answer_start) * 1000, 3)
+    diagnostics = retrieval.diagnostics if request.debug else None
+    if diagnostics is not None:
+        diagnostics.setdefault("timings", {})["answer_builder_ms"] = answer_builder_ms
+        diagnostics["timings"]["total_ms"] = round(
+            diagnostics["timings"].get("total_ms", 0.0) + answer_builder_ms,
+            3,
+        )
 
     return ChatQueryResponse(
         answer=answer,
@@ -62,5 +72,5 @@ def query_chat(
             )
             for chunk in chunks
         ],
-        diagnostics=retrieval.diagnostics if request.debug else None,
+        diagnostics=diagnostics,
     )
